@@ -93,3 +93,4 @@ ENV/
 *checkpoint
 data/*
 results/*
+*events.out*
