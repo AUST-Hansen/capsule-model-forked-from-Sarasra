@@ -59,7 +59,7 @@ tf.flags.DEFINE_string('summary_dir', None,
 tf.flags.DEFINE_string('checkpoint', None,
                        'The model checkpoint for evaluation.')
 tf.flags.DEFINE_bool('train', True, 'Either train the model or test the model.')
-tf.flags.DEFINE_bool('validate', False, 'Run trianing/eval in validation mode.')
+tf.flags.DEFINE_bool('validate', False, 'Run training/eval in validation mode.')
 
 models = {
     'capsule': capsule_model.CapsuleModel,
