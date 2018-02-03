@@ -104,26 +104,37 @@ def _update_routing(votes, biases, logit_shape, num_dims, input_dim, output_dim,
   def _body(i, logits, activations):
     """Routing while loop."""
     # route: [batch, input_dim, output_dim, ...]
+    # corresponding to line 4 of routing algorithm
     if leaky:
-      route = _leaky_routing(logits, output_dim)
+      route = _leaky_routing(logits, output_dim)  # heikeji
     else:
       route = tf.nn.softmax(logits, dim=2)
+
+    # line 5
+    # again, the paper does not explicit use the bias term(Eq.2
+    # s_j=sum_i(c_ij*u_hat_ij)), but here we see that.
     preactivate_unrolled = route * votes_trans
     preact_trans = tf.transpose(preactivate_unrolled, r_t_shape)
     preactivate = tf.reduce_sum(preact_trans, axis=1) + biases
+
+    # line 6
     activation = _squash(preactivate)
     activations = activations.write(i, activation)
+
+    # line 7
     # distances: [batch, input_dim, output_dim]
     act_3d = tf.expand_dims(activation, 1)
     tile_shape = np.ones(num_dims, dtype=np.int32).tolist()
     tile_shape[1] = input_dim
     act_replicated = tf.tile(act_3d, tile_shape)
+    # distances = u_hat * v
     distances = tf.reduce_sum(votes * act_replicated, axis=3)
     logits += distances
     return (i + 1, logits, activations)
 
   activations = tf.TensorArray(
       dtype=tf.float32, size=num_routing, clear_after_read=False)
+  # logits corresponds to b_ij
   logits = tf.fill(logit_shape, 0.0)
   i = tf.constant(0, dtype=tf.int32)
   _, logits, activations = tf.while_loop(
@@ -175,6 +186,7 @@ def capsule(input_tensor,
     weights = variables.weight_variable(
         [input_dim, input_atoms, output_dim * output_atoms])
     biases = variables.bias_variable([output_dim, output_atoms])
+    # Eq.2, u_hat = W * u
     with tf.name_scope('Wx_plus_b'):
       # Depthwise matmul: [b, d, c] ** [d, c, o_c] = [b, d, o_c]
       # To do this: tile input, do element-wise multiplication and reduce
@@ -185,9 +197,11 @@ def capsule(input_tensor,
       votes = tf.reduce_sum(input_tiled * weights, axis=2)
       votes_reshaped = tf.reshape(votes,
                                   [-1, input_dim, output_dim, output_atoms])
+    # Eq.2 End, get votes_reshaped [batch_size, 1152, 10, 16]
     with tf.name_scope('routing'):
       input_shape = tf.shape(input_tensor)
       logit_shape = tf.stack([input_shape[0], input_dim, output_dim])
+      # Routing algorithm, return [batch_size, 10, 16]
       activations = _update_routing(
           votes=votes_reshaped,
           biases=biases,
@@ -313,6 +327,7 @@ def conv_slim_capsule(input_tensor,
       and width is adjusted with same rules as 'VALID' in tf.nn.conv2d.
   """
   with tf.variable_scope(layer_name):
+    # convolution. return [batch_size, 1, 32, 8, 6, 6]
     kernel = variables.weight_variable(shape=[
         kernel_size, kernel_size, input_atoms, output_dim * output_atoms
     ])
@@ -320,6 +335,7 @@ def conv_slim_capsule(input_tensor,
     votes, votes_shape, input_shape = _depthwise_conv3d(
         input_tensor, kernel, input_dim, output_dim, input_atoms, output_atoms,
         stride, padding)
+    # convolution End
 
     with tf.name_scope('routing'):
       logit_shape = tf.stack([
@@ -327,6 +343,13 @@ def conv_slim_capsule(input_tensor,
       ])
       biases_replicated = tf.tile(biases,
                                   [1, 1, votes_shape[2], votes_shape[3]])
+      # Do routing algorithm inside primaryCaps layer
+      # What is interesting is that the paper does not mention the routing
+      # here. And the words 'One can see PrimaryCapsules as a Convolution
+      # layer with Eq. 1 as its block non-linearity' and 'no routing is used
+      # between Conv1 and PrimaryCapsules.' in paper are easy to mislead people
+      # to think it as an ordinary convolution layer with squash operation.
+      # Ok, in a word, the code is inconsistent with the paper.
       activations = _update_routing(
           votes=votes,
           biases=biases_replicated,

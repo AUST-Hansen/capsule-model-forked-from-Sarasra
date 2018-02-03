@@ -51,6 +51,7 @@ class CapsuleModel(model.Model):
     Returns:
       A 3D tensor of the top capsule layer with 10 capsule embeddings.
     """
+    # PrimaryCaps Layer Start
     capsule1 = layers.conv_slim_capsule(
         input_tensor,
         input_dim=1,
@@ -64,10 +65,18 @@ class CapsuleModel(model.Model):
         padding=self._hparams.padding,
         leaky=self._hparams.leaky,)
     capsule1_atom_last = tf.transpose(capsule1, [0, 1, 3, 4, 2])
-    capsule1_3d = tf.reshape(capsule1_atom_last,
-                             [tf.shape(input_tensor)[0], -1, 8])
+    # PrimaryCaps Layer End, return [batch_size, 32, 6, 6, 8] in format
+    # [batch_size, capsule_channels, height, width, capsule_dims]
+
+    # Since the digitCaps layer is a fully connected capsule layer, reshape to
+    # [batch_size, 1152, 8] will be easier to deal with
+    capsule1_3d = tf.reshape(capsule1_atom_last, [tf.shape(input_tensor)[0], -1, 8])
     _, _, _, height, width = capsule1.get_shape()
+
+    # get 1152, the number of capsules in primaryCaps layer
     input_dim = self._hparams.num_prime_capsules * height.value * width.value
+
+    # DigitCaps layer, return [batch_size, 10, 16]
     return layers.capsule(
         input_tensor=capsule1_3d,
         input_dim=input_dim,
@@ -176,7 +185,7 @@ class CapsuleModel(model.Model):
     image = features['images']
     image_4d = tf.reshape(image, [-1, image_depth, image_dim, image_dim])
 
-    # ReLU Convolution
+    # ReLU Convolution (conv1 layer start)
     with tf.variable_scope('conv1') as scope:
       kernel = variables.weight_variable(
           shape=[9, 9, image_depth, 256], stddev=5e-2,
@@ -191,10 +200,16 @@ class CapsuleModel(model.Model):
       relu1 = tf.nn.relu(pre_activation, name=scope.name)
       if self._hparams.verbose:
         tf.summary.histogram('activation', relu1)
+    # conv1 laeyr end, return [128, 256, 20, 20] in NCHW format.
+    # Then  expand dims to [128, 1, 256, 20, 20]
     hidden1 = tf.expand_dims(relu1, 1)
 
-    # Capsules
+    # Capsules, including primary capsules layer and digit capsules layer.
+    # The final output here is [batch_size, 10, 16]
     capsule_output = self._build_capsule(hidden1, features['num_classes'])
+    # calculate the length of v using vector norm or 2-norm ||v||_2
+    # return [batch_size, 10]
+    # equals to the sqrt(reduce_sum(square(v)))
     logits = tf.norm(capsule_output, axis=-1)
 
     # Reconstruction
