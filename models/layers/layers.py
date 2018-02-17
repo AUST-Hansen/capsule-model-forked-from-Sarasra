@@ -146,6 +146,61 @@ def _update_routing(votes, biases, logit_shape, num_dims, input_dim, output_dim,
   return activations.read(num_routing - 1)
 
 
+def _update_routing_v1(votes,
+                       biases,
+                       logit_shape,
+                       num_dims,
+                       input_dim,
+                       output_dim,
+                       num_routing,
+                       leaky=False):
+    """ Implementing routing with `for` loop rather than tf.while_loop.
+    Experiments show it is faster than the tf.while_loop implementation.
+    The following is the results on 1x1080Ti GPU(bigger is better):
+
+    | _update_routing | _update_routing_v1 |
+    |   ~7.4 step/s   |    ~8.25 step/s    |
+
+    if the inputs are not in TFRecord format, the different is even more obvious.
+    """
+    votes_t_shape = [3, 0, 1, 2]
+    for i in range(num_dims - 4):
+        votes_t_shape += [i + 4]
+    r_t_shape = [1, 2, 3, 0]
+    for i in range(num_dims - 4):
+        r_t_shape += [i + 4]
+    votes_trans = tf.transpose(votes, votes_t_shape)
+    votes_trans_stopped = tf.stop_gradient(votes_trans, name="stop_gradient")
+
+    logits = tf.fill(logit_shape, 0.0)
+    for i in range(num_routing):
+        if leaky:
+            route = _leaky_routing(logits, output_dim)
+        else:
+            route = tf.nn.softmax(logits, dim=2)
+
+        if i == num_routing - 1:
+            preactivate_unrolled = route * votes_trans
+            preact_trans = tf.transpose(preactivate_unrolled, r_t_shape)
+            preactivate = tf.reduce_sum(preact_trans, axis=1) + biases
+
+            activation = _squash(preactivate)
+        else:
+            preactivate_unrolled = route * votes_trans_stopped
+            preact_trans = tf.transpose(preactivate_unrolled, r_t_shape)
+            preactivate = tf.reduce_sum(preact_trans, axis=1) + biases
+
+            activation = _squash(preactivate)
+            act_3d = tf.expand_dims(activation, 1)
+            tile_shape = np.ones(num_dims, dtype=np.int32).tolist()
+            tile_shape[1] = input_dim
+            act_replicated = tf.tile(act_3d, tile_shape)
+            distances = tf.reduce_sum(votes * act_replicated, axis=3)
+            logits += distances
+
+    return(activation)
+
+
 def capsule(input_tensor,
             input_dim,
             output_dim,
@@ -202,7 +257,7 @@ def capsule(input_tensor,
       input_shape = tf.shape(input_tensor)
       logit_shape = tf.stack([input_shape[0], input_dim, output_dim])
       # Routing algorithm, return [batch_size, 10, 16]
-      activations = _update_routing(
+      activations = _update_routing_v1(
           votes=votes_reshaped,
           biases=biases,
           logit_shape=logit_shape,
@@ -350,7 +405,7 @@ def conv_slim_capsule(input_tensor,
       # between Conv1 and PrimaryCapsules.' in paper are easy to mislead people
       # to think it as an ordinary convolution layer with squash operation.
       # Ok, in a word, the code is inconsistent with the paper.
-      activations = _update_routing(
+      activations = _update_routing_v1(
           votes=votes,
           biases=biases_replicated,
           logit_shape=logit_shape,
